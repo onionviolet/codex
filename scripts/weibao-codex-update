@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+branch=codex/weibao-downstream
+install_dir=${WEIBAO_CODEX_BIN_DIR:-"$HOME/.local/bin"}
+install_path="$install_dir/codex-weibao"
+
+cd "$repo_dir"
+
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "Refusing to update with tracked local changes." >&2
+  exit 1
+fi
+
+if [ "$(git branch --show-current)" != "$branch" ]; then
+  echo "Refusing to update outside $branch." >&2
+  exit 1
+fi
+
+git fetch origin "$branch"
+git merge --ff-only "origin/$branch"
+
+cd "$repo_dir/codex-rs"
+cargo build --locked --release --bin codex
+
+mkdir -p "$install_dir"
+temporary_path="$install_path.new"
+install -m 0755 "$repo_dir/codex-rs/target/release/codex" "$temporary_path"
+mv -f "$temporary_path" "$install_path"
+
+echo "Installed $install_path"
+echo "Codex state remains in ${CODEX_HOME:-$HOME/.codex}."
