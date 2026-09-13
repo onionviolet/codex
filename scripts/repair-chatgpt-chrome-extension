@@ -1,0 +1,282 @@
+#!/bin/sh
+set -eu
+
+app_path=${CHATGPT_APP_PATH:-/Applications/ChatGPT.app}
+resources_path="$app_path/Contents/Resources"
+plugin_root="$resources_path/plugins/openai-bundled/plugins/chrome"
+host_source="$plugin_root/extension-host/macos/arm64/ChatGPT for Chrome"
+node_path="$resources_path/cua_node/bin/node"
+codex_home=${CODEX_HOME:-"$HOME/.codex"}
+support_dir="$HOME/Library/Application Support/OpenAI/ChatGPTBrowserHost"
+host_path="$support_dir/ChatGPT for Chrome"
+launcher_path="$support_dir/launch-chatgpt-chrome-host"
+config_path="$support_dir/extension-host-config.json"
+manifest_dir="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+manifest_path="$manifest_dir/com.openai.codexextension.json"
+registry_path="$HOME/Library/Application Support/OpenAI/Codex/chrome-native-hosts-v2.json"
+codex_registry_path="$codex_home/chrome-native-hosts-v2.json"
+installed_script="$support_dir/repair-chatgpt-chrome-extension"
+production_extension_id=hehggadaopoacecdllhhajmbjkdcmajg
+edge_extension_id=odlomjlbamekndcpllcnffbgeohgkmjh
+entry_id=manual-prod-chatgpt-browser-repair
+install_id=manual-user-level-chatgpt-browser-repair
+legacy_entry_id=manual-prod-chatgpt-26.908.40834
+legacy_install_id=manual-user-level-chatgpt
+
+fail() {
+  echo "repair-chatgpt-chrome-extension: $*" >&2
+  exit 1
+}
+
+require_file() {
+  [ -f "$1" ] || fail "required file is missing: $1"
+}
+
+app_version() {
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist"
+}
+
+chatgpt_pid() {
+  ps axww -o pid=,command= | awk -v executable="$app_path/Contents/MacOS/ChatGPT" \
+    '$2 == executable { print $1; exit }'
+}
+
+write_config() {
+  "$node_path" - "$config_path" "$plugin_root" "$resources_path" <<'NODE'
+const fs = require("node:fs");
+const [output, pluginRoot, resourcesPath] = process.argv.slice(2);
+const config = {
+  schemaVersion: 1,
+  channel: "prod",
+  browserClientPath: `${pluginRoot}/scripts/browser-client.mjs`,
+  browserServicePath: `${pluginRoot}/scripts/browser-service.mjs`,
+  codexCliPath: `${resourcesPath}/codex`,
+  nodePath: `${resourcesPath}/cua_node/bin/node`,
+  nodeReplPath: `${resourcesPath}/cua_node/bin/node_repl`,
+  proxyHost: "127.0.0.1",
+  proxyPort: 0,
+};
+fs.writeFileSync(output, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+NODE
+}
+
+write_registry() {
+  version=$1
+  pid=$2
+  now=$3
+  "$node_path" - "$registry_path" "$codex_registry_path" "$entry_id" "$install_id" \
+    "$legacy_entry_id" "$legacy_install_id" \
+    "$version" "$pid" "$now" "$plugin_root" "$resources_path" "$codex_home" "$host_path" \
+    "$production_extension_id" "$edge_extension_id" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const [
+  registryPath,
+  codexRegistryPath,
+  entryId,
+  installId,
+  legacyEntryId,
+  legacyInstallId,
+  version,
+  pidText,
+  now,
+  pluginRoot,
+  resourcesPath,
+  codexHome,
+  hostPath,
+  productionExtensionId,
+  edgeExtensionId,
+] = process.argv.slice(2);
+const pluginAppServerCli = path.join(codexHome, "plugins", ".plugin-appserver", "codex");
+const codexCliPath = fs.existsSync(pluginAppServerCli)
+  ? pluginAppServerCli
+  : path.join(resourcesPath, "codex");
+const pid = Number(pidText);
+const entry = {
+  schemaVersion: 2,
+  appServerProtocolVersion: 2,
+  appVersion: version,
+  channel: "prod",
+  cliVersion: version,
+  entryId,
+  extensionBuildChannels: ["prod", "stable"],
+  extensionIds: [productionExtensionId, edgeExtensionId],
+  installId,
+  nativeHostNames: ["com.openai.codexextension"],
+  nativeHostProtocolVersion: 2,
+  nativeHostVersion: version,
+  paths: {
+    browserClientPath: path.join(pluginRoot, "scripts", "browser-client.mjs"),
+    browserServicePath: path.join(pluginRoot, "scripts", "browser-service.mjs"),
+    codexCliPath,
+    codexHome,
+    extensionHostPath: hostPath,
+    nodePath: path.join(resourcesPath, "cua_node", "bin", "node"),
+    nodeReplPath: path.join(resourcesPath, "cua_node", "bin", "node_repl"),
+    resourcesPath,
+  },
+  ...(Number.isInteger(pid) && pid > 0
+    ? { presence: { lastSeenAt: now, pid, startedAt: now } }
+    : {}),
+  proxyHost: "127.0.0.1",
+  proxyPort: 0,
+  updatedAt: now,
+};
+for (const output of [registryPath, codexRegistryPath]) {
+  let registry = { schemaVersion: 2, entries: [] };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(output, "utf8"));
+    if (parsed.schemaVersion === 2 && Array.isArray(parsed.entries)) registry = parsed;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  registry.entries = registry.entries.filter(
+    candidate =>
+      candidate.entryId !== entryId &&
+      candidate.installId !== installId &&
+      candidate.entryId !== legacyEntryId &&
+      candidate.installId !== legacyInstallId,
+  );
+  registry.entries.unshift(entry);
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  const temporary = `${output}.new`;
+  fs.writeFileSync(temporary, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporary, output);
+}
+NODE
+}
+
+refresh_registry() {
+  require_file "$node_path"
+  require_file "$host_path"
+  version=$(app_version)
+  pid=$(chatgpt_pid)
+  now=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+  write_registry "$version" "${pid:-0}" "$now"
+}
+
+install_repair() {
+  [ "$(uname -s)" = Darwin ] || fail "this repair currently supports macOS only"
+  [ "$(uname -m)" = arm64 ] || fail "this repair currently supports Apple silicon only"
+  require_file "$host_source"
+  require_file "$node_path"
+  require_file "$resources_path/codex"
+  require_file "$plugin_root/scripts/browser-client.mjs"
+  require_file "$plugin_root/scripts/browser-service.mjs"
+
+  mkdir -p "$support_dir" "$manifest_dir"
+  install -m 0755 "$host_source" "$host_path"
+  install -m 0755 "$0" "$installed_script"
+  write_config
+  refresh_registry
+
+  "$node_path" - "$manifest_path" "$launcher_path" "$production_extension_id" "$edge_extension_id" <<'NODE'
+const fs = require("node:fs");
+const [output, launcherPath, productionExtensionId, edgeExtensionId] = process.argv.slice(2);
+const manifest = {
+  allowed_origins: [
+    `chrome-extension://${productionExtensionId}/`,
+    `chrome-extension://${edgeExtensionId}/`,
+  ],
+  description: "ChatGPT browser native messaging host",
+  name: "com.openai.codexextension",
+  path: launcherPath,
+  type: "stdio",
+};
+fs.writeFileSync(output, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+NODE
+
+  temporary_launcher="$launcher_path.new"
+  {
+    echo '#!/bin/sh'
+    printf 'exec %s --native-host "$@"\n' "$(printf "'%s'" "$(printf %s "$installed_script" | sed "s/'/'\\\\''/g")")"
+  } > "$temporary_launcher"
+  chmod 0755 "$temporary_launcher"
+  mv -f "$temporary_launcher" "$launcher_path"
+
+  echo "Installed the ChatGPT Chrome repair."
+  echo "Native manifest: $manifest_path"
+  echo "Repair command: $installed_script"
+}
+
+check_repair() {
+  require_file "$host_path"
+  require_file "$launcher_path"
+  require_file "$config_path"
+  require_file "$manifest_path"
+  require_file "$registry_path"
+  require_file "$codex_registry_path"
+  "$node_path" - "$manifest_path" "$registry_path" "$codex_registry_path" "$launcher_path" "$entry_id" <<'NODE'
+const fs = require("node:fs");
+const [manifestPath, registryPath, codexRegistryPath, launcherPath, entryId] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+if (manifest.name !== "com.openai.codexextension" || manifest.path !== launcherPath) {
+  throw new Error("native messaging manifest does not point at the repair launcher");
+}
+for (const input of [registryPath, codexRegistryPath]) {
+  const registry = JSON.parse(fs.readFileSync(input, "utf8"));
+  const entry = registry.entries?.find(candidate => candidate.entryId === entryId);
+  if (!entry || entry.schemaVersion !== 2 || entry.appServerProtocolVersion !== 2) {
+    throw new Error(`compatible repair entry is missing from ${input}`);
+  }
+}
+NODE
+  echo "ChatGPT Chrome repair files are installed and valid."
+}
+
+remove_repair() {
+  "$node_path" - "$registry_path" "$codex_registry_path" "$entry_id" "$install_id" \
+    "$legacy_entry_id" "$legacy_install_id" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const [
+  registryPath,
+  codexRegistryPath,
+  entryId,
+  installId,
+  legacyEntryId,
+  legacyInstallId,
+] = process.argv.slice(2);
+for (const output of [registryPath, codexRegistryPath]) {
+  try {
+    const registry = JSON.parse(fs.readFileSync(output, "utf8"));
+    if (registry.schemaVersion !== 2 || !Array.isArray(registry.entries)) continue;
+    registry.entries = registry.entries.filter(
+      entry =>
+        entry.entryId !== entryId &&
+        entry.installId !== installId &&
+        entry.entryId !== legacyEntryId &&
+        entry.installId !== legacyInstallId,
+    );
+    fs.writeFileSync(output, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o600 });
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+NODE
+  rm -f "$manifest_path" "$launcher_path" "$host_path" "$config_path" "$installed_script"
+  echo "Removed the ChatGPT Chrome repair."
+}
+
+case ${1:---repair} in
+  --repair)
+    install_repair
+    ;;
+  --check)
+    check_repair
+    ;;
+  --refresh)
+    refresh_registry
+    ;;
+  --native-host)
+    shift
+    refresh_registry
+    exec "$host_path" "$@"
+    ;;
+  --uninstall)
+    remove_repair
+    ;;
+  *)
+    fail "usage: $0 [--repair|--check|--refresh|--uninstall]"
+    ;;
+esac
