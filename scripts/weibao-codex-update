@@ -6,6 +6,7 @@ repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 branch=codex/weibao-downstream
 install_dir=${WEIBAO_CODEX_BIN_DIR:-"$HOME/.local/bin"}
 install_path="$install_dir/codex-weibao"
+package_root=${WEIBAO_CODEX_PACKAGE_DIR:-"$HOME/.local/lib/codex-weibao"}
 
 cd "$repo_dir"
 
@@ -22,13 +23,31 @@ fi
 git fetch origin "$branch"
 git merge --ff-only "origin/$branch"
 
-cd "$repo_dir/codex-rs"
-cargo build --locked --release --bin codex
+revision=$(git rev-parse HEAD)
+short_revision=$(git rev-parse --short=12 HEAD)
+release_dir="$package_root/releases/$revision"
+
+if [ ! -d "$release_dir" ]; then
+  mkdir -p "$package_root/releases"
+  staging_dir=$(mktemp -d "$package_root/releases/.staging.XXXXXX")
+  trap 'rm -rf "$staging_dir"' EXIT HUP INT TERM
+
+  cd "$repo_dir"
+  just assemble-codex-package \
+    --cargo-profile release \
+    --package-version "0.0.0+weibao.$short_revision" \
+    --package-dir "$staging_dir/package" \
+    --rg-bin "$(command -v rg)"
+
+  mv "$staging_dir/package" "$release_dir"
+  rmdir "$staging_dir"
+  trap - EXIT HUP INT TERM
+fi
 
 mkdir -p "$install_dir"
 temporary_path="$install_path.new"
-install -m 0755 "$repo_dir/codex-rs/target/release/codex" "$temporary_path"
+ln -sfn "$release_dir/bin/codex" "$temporary_path"
 mv -f "$temporary_path" "$install_path"
 
-echo "Installed $install_path"
+echo "Installed $install_path -> $release_dir/bin/codex"
 echo "Codex state remains in ${CODEX_HOME:-$HOME/.codex}."

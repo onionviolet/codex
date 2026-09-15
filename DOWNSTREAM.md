@@ -28,9 +28,12 @@ scripts/weibao-codex-update
 ```
 
 This fast-forwards the local downstream branch to its GitHub branch, builds a
-release binary, and atomically installs it as `~/.local/bin/codex-weibao`. It
-does not merge upstream automatically. Upstream changes are reviewed and tested
-before they enter the downstream branch.
+canonical release package, and atomically links its entrypoint as
+`~/.local/bin/codex-weibao`. Versioned packages under
+`~/.local/lib/codex-weibao/releases` retain the code-mode host and other runtime
+helpers required by upstream. The updater does not merge upstream
+automatically. Upstream changes are reviewed and tested before they enter the
+downstream branch.
 
 ## Absorbing upstream or community work
 
@@ -39,4 +42,3 @@ before they enter the downstream branch.
 3. Run formatting and the narrowest relevant test suite.
 4. Merge the verified change into `codex/weibao-downstream` and record its source.
 5. Push the downstream branch, then run `scripts/weibao-codex-update` on each Mac.
-
