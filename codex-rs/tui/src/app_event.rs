@@ -287,6 +287,11 @@ pub(crate) enum AppEvent {
     NewAgentsOverviewSession {
         cwd: Option<AbsolutePathBuf>,
     },
+    /// Create an empty session in a worktree from the selected project's default branch.
+    NewAgentsOverviewWorktree {
+        cwd: Option<AbsolutePathBuf>,
+    },
+    AgentsOverviewWorktreeCreated(Result<crate::app::PendingWorktree, String>),
     /// Rename a task directly from the shared dashboard.
     RenameAgentsOverviewThread {
         thread_id: ThreadId,
@@ -597,6 +602,9 @@ pub(crate) enum AppEvent {
     /// Forward a command to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
     CodexOp(AppCommand),
+
+    /// A blocking image-preparation worker has finished; payload stays with its widget.
+    ImagesPrepared(Uuid),
 
     /// Approve one retry of a recent auto-review denial selected in the TUI.
     ApproveRecentAutoReviewDenial {
